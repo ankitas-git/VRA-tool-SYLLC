@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from app.db import list_documents, list_vendors, save_assessment
+from app.db import latest_review, list_documents, list_vendors, save_assessment
 from app.documents import evidence_gaps, required_doc_types
 from app.questionnaire import CONTROL_QUESTIONS, INHERENT_QUESTIONS, questions_by_id
 from app.scoring import score_assessment
@@ -56,6 +56,17 @@ with st.expander("Upload a document", expanded=bool(outstanding)):
         default_type=outstanding[0]["doc_type"] if outstanding else None,
     )
 
+review = latest_review(vendor_id)
+if review:
+    st.info(
+        f"Latest questionnaire review (#{review['id']}, {review['created_at']}): "
+        f"{review['summary']['coverage_pct']}% coverage, "
+        f"{review['summary']['total'] - review['summary']['counts'].get('Answered', 0)} question(s) not fully answered."
+    )
+else:
+    st.caption("No questionnaire review yet for this vendor. Run one on the Review page.")
+st.page_link("pages/3_Review.py", label="Review documents against the questionnaire", icon="🔍")
+
 gaps = evidence_gaps(control_answers, docs)
 qmap = questions_by_id()
 for g in gaps:
@@ -71,6 +82,8 @@ if st.button("Score and save", type="primary"):
         "outstanding": [r["doc_type"] for r in outstanding],
         "document_ids": [d["id"] for d in docs],
         "gaps": gaps,
+        "questionnaire_review_id": review["id"] if review else None,
+        "questionnaire_coverage_pct": review["summary"]["coverage_pct"] if review else None,
     }
     assessment_id = save_assessment(vendor_id, answers, scores, evidence=evidence)
     st.success(f"Saved assessment #{assessment_id}")

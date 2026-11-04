@@ -43,10 +43,11 @@ def upload_form(vendor_id: int, key: str, default_type: Optional[str] = None) ->
             format_func=lambda t: DOC_TYPES_BY_ID[t]["label"],
         )
         st.caption(DOC_TYPES_BY_ID[doc_type]["description"])
-        upload = st.file_uploader(
-            "File",
+        uploads = st.file_uploader(
+            "Files",
             type=[e.lstrip(".") for e in sorted(ALLOWED_EXTENSIONS)],
-            help=f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB.",
+            accept_multiple_files=True,
+            help=f"Max {MAX_UPLOAD_BYTES // (1024 * 1024)} MB per file. All files get the type and dates chosen here.",
         )
         c1, c2 = st.columns(2)
         with c1:
@@ -64,25 +65,31 @@ def upload_form(vendor_id: int, key: str, default_type: Optional[str] = None) ->
             )
         notes = st.text_input("Notes", placeholder="e.g. covers period Jan–Dec, bridge letter attached")
         if st.form_submit_button("Upload document", type="primary"):
-            if upload is None:
-                st.error("Choose a file to upload.")
+            if not uploads:
+                st.error("Choose at least one file to upload.")
                 return
-            data = upload.getvalue()
-            errors = validate_upload(upload.name, data)
-            if errors:
-                for e in errors:
-                    st.error(e)
+            problems = {}
+            for up in uploads:
+                errs = validate_upload(up.name, up.getvalue())
+                if errs:
+                    problems[up.name] = errs
+            if problems:
+                for name, errs in problems.items():
+                    for e in errs:
+                        st.error(f"{name}: {e}")
+                st.error("Nothing was uploaded. Fix or remove the files above and try again.")
                 return
             exp = expires or default_expiry(doc_type, issued)
-            add_document(
-                vendor_id,
-                doc_type,
-                upload.name,
-                data,
-                content_type=upload.type or "",
-                issued_on=issued.isoformat() if issued else None,
-                expires_on=exp.isoformat() if exp else None,
-                notes=notes,
-            )
-            st.success(f"Uploaded {upload.name} as {DOC_TYPES_BY_ID[doc_type]['label']}.")
+            for up in uploads:
+                add_document(
+                    vendor_id,
+                    doc_type,
+                    up.name,
+                    up.getvalue(),
+                    content_type=up.type or "",
+                    issued_on=issued.isoformat() if issued else None,
+                    expires_on=exp.isoformat() if exp else None,
+                    notes=notes,
+                )
+            st.success(f"Uploaded {len(uploads)} file(s) as {DOC_TYPES_BY_ID[doc_type]['label']}.")
             st.rerun()

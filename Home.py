@@ -44,5 +44,7 @@ else:
 
 st.page_link("pages/1_Vendors.py", label="Manage vendors", icon="🏢")
 st.page_link("pages/2_Documents.py", label="Upload security documents", icon="📎")
-st.page_link("pages/3_Assess.py", label="Run an assessment", icon="📝")
-st.page_link("pages/4_History.py", label="Assessment history", icon="📂")
+st.page_link("pages/3_Review.py", label="Review documents against the questionnaire", icon="🔍")
+st.page_link("pages/4_Assess.py", label="Run an assessment", icon="📝")
+st.page_link("pages/5_History.py", label="Assessment history", icon="📂")
+st.page_link("pages/6_Admin.py", label="Admin: edit the security questionnaire", icon="⚙️")
