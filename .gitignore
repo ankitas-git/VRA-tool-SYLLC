@@ -8,3 +8,4 @@ data/*.db-journal
 data/*.txt
 .env
 .streamlit/secrets.toml
+data/documents/
