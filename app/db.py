@@ -105,7 +105,19 @@ CREATE TABLE IF NOT EXISTS document_reviews (
 # Columns added after the first release; applied to existing databases on connect.
 MIGRATIONS = [
     ("assessments", "evidence_json", "TEXT NOT NULL DEFAULT '{}'"),
+    ("questionnaire_questions", "weight", "REAL NOT NULL DEFAULT 0.3"),
+    ("questionnaire_questions", "nist_function", "TEXT NOT NULL DEFAULT ''"),
+    ("document_reviews", "responses_json", "TEXT NOT NULL DEFAULT '{}'"),
 ]
+
+# Section names used by the first release of the default questionnaire, before
+# it was aligned with the scoring workbook's control areas.
+_V1_SECTIONS = {
+    "Governance & Policy", "Certifications & Assurance", "Human Resources Security",
+    "Asset Management", "Access Control", "Cryptography", "Physical & Environmental Security",
+    "Operations Security", "Incident Response", "Network Security",
+    "Application Security & SDLC", "Business Continuity & DR", "Supplier Management",
+}
 
 
 def connect() -> sqlite3.Connection:
@@ -119,6 +131,7 @@ def connect() -> sqlite3.Connection:
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
     _seed_questionnaire(conn)
+    _backfill_weights(conn)
     return conn
 
 
@@ -135,17 +148,44 @@ def _seed_questionnaire(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _backfill_weights(conn: sqlite3.Connection) -> None:
+    """One-time upgrade for questionnaires seeded before weights existed.
+
+    Questions whose text still matches a default question get that question's
+    weight, NIST function and control area. Sections an admin renamed, and
+    questions an admin added or reworded, are left alone (they keep the
+    standard 0.3 weight until an admin sets one).
+    """
+    if conn.execute("SELECT 1 FROM meta WHERE key = 'questionnaire_weights_v2'").fetchone():
+        return
+    from app.company_questionnaire import DEFAULT_QUESTIONS
+
+    defaults = {" ".join(t.split()).lower(): (area, nist, w) for area, nist, w, t, _ in DEFAULT_QUESTIONS}
+    for row in conn.execute("SELECT id, section, text FROM questionnaire_questions").fetchall():
+        match = defaults.get(" ".join(row["text"].split()).lower())
+        if not match:
+            continue
+        area, nist, weight = match
+        section = area if row["section"] in _V1_SECTIONS else row["section"]
+        conn.execute(
+            "UPDATE questionnaire_questions SET weight = ?, nist_function = ?, section = ? WHERE id = ?",
+            (weight, nist, section, row["id"]),
+        )
+    conn.execute("INSERT INTO meta (key, value) VALUES ('questionnaire_weights_v2', '1')")
+    conn.commit()
+
+
 def _insert_default_questions(conn: sqlite3.Connection) -> None:
     from app.company_questionnaire import DEFAULT_QUESTIONS, needs_document
 
-    for i, (section, text, keywords) in enumerate(DEFAULT_QUESTIONS, start=1):
+    for i, (area, nist, weight, text, keywords) in enumerate(DEFAULT_QUESTIONS, start=1):
         conn.execute(
             """
             INSERT INTO questionnaire_questions
-                (section, text, keywords, requires_document, sort_order)
-            VALUES (?, ?, ?, ?, ?)
+                (section, nist_function, weight, text, keywords, requires_document, sort_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (section, text, ", ".join(keywords), int(needs_document(text)), i * 10),
+            (area, nist, weight, text, ", ".join(keywords), int(needs_document(text)), i * 10),
         )
 
 
@@ -378,7 +418,10 @@ def delete_document(document_id: int) -> bool:
 
 # --- Company questionnaire (admin-managed) -----------------------------------
 
-QUESTION_FIELDS = ("section", "text", "keywords", "guidance", "requires_document", "sort_order", "active")
+QUESTION_FIELDS = (
+    "section", "nist_function", "weight", "text", "keywords", "guidance",
+    "requires_document", "sort_order", "active",
+)
 
 
 def list_questions(active_only: bool = True) -> List[Dict[str, Any]]:
@@ -400,9 +443,33 @@ def _clean_question(fields: Dict[str, Any]) -> Dict[str, Any]:
             out[k] = int(bool(out[k]))
     if "sort_order" in out:
         out["sort_order"] = int(out["sort_order"] or 0)
+    if "weight" in out:
+        out["weight"] = parse_weight(out["weight"])
+    if "nist_function" in out:
+        from app.company_questionnaire import NIST_FUNCTIONS
+
+        nf = "" if out["nist_function"] is None else str(out["nist_function"]).strip()
+        match = next((f for f in NIST_FUNCTIONS if f.lower() == nf.lower()), None)
+        if nf and not match:
+            raise ValueError(f"NIST function must be one of {', '.join(NIST_FUNCTIONS)} (got '{nf}').")
+        out["nist_function"] = match or ""
     if not out.get("text", "x") or not out.get("section", "x"):
         raise ValueError("Every question needs a section and question text.")
     return out
+
+
+def parse_weight(value: Any) -> float:
+    """Weights run from 0 (not scored) to 1. Accepts 0.3, "0.3" or "30%"."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return 0.0
+    if isinstance(value, str):
+        v = value.strip()
+        w = float(v.rstrip("%")) / 100 if v.endswith("%") else float(v)
+    else:
+        w = float(value)
+    if w != w or w < 0 or w > 1:  # NaN or out of range
+        raise ValueError(f"Weight must be between 0 and 1 (got {value}).")
+    return round(w, 4)
 
 
 def _log_change(conn, question_id, action, before, after, changed_by) -> None:
@@ -422,7 +489,12 @@ def _log_change(conn, question_id, action, before, after, changed_by) -> None:
 
 
 def add_question(fields: Dict[str, Any], changed_by: str = "admin") -> int:
-    data = _clean_question({"keywords": "", "guidance": "", "requires_document": 0, "active": 1, **fields})
+    from app.company_questionnaire import STANDARD_WEIGHT
+
+    data = _clean_question(
+        {"keywords": "", "guidance": "", "requires_document": 0, "active": 1,
+         "weight": STANDARD_WEIGHT, "nist_function": "", **fields}
+    )
     if "sort_order" not in data:
         with connect() as conn:
             top = conn.execute("SELECT COALESCE(MAX(sort_order), 0) FROM questionnaire_questions").fetchone()[0]
@@ -475,10 +547,15 @@ def reset_questionnaire(changed_by: str = "admin") -> None:
 
 
 def replace_questionnaire(rows: List[Dict[str, Any]], changed_by: str = "admin") -> int:
-    """Bulk import: replace all questions with `rows` (validated first)."""
+    """Bulk import: replace all questions with `rows` (validated first).
+
+    A blank weight imports as 0 (not scored), as a blank weight cell does in
+    the scoring workbook.
+    """
     clean = []
     for i, r in enumerate(rows, start=1):
-        r = {"keywords": "", "guidance": "", "active": 1, "sort_order": i * 10, **r}
+        r = {"keywords": "", "guidance": "", "active": 1, "sort_order": i * 10,
+             "weight": 0, "nist_function": "", **r}
         if "requires_document" not in r or r["requires_document"] in ("", None):
             from app.company_questionnaire import needs_document
 
@@ -514,13 +591,20 @@ def save_review(
     results: List[Dict[str, Any]],
     summary: Dict[str, Any],
     notes: Optional[List[str]] = None,
+    responses: Optional[Dict[Any, str]] = None,
 ) -> int:
+    """Save a review. `responses` defaults to the review's suggested responses."""
+    from app.questionnaire_scoring import suggested_response
+
+    if responses is None:
+        responses = {r["question_id"]: suggested_response(r["status"]) for r in results}
     with connect() as conn:
         cur = conn.execute(
             """
             INSERT INTO document_reviews
-                (vendor_id, method, model, document_ids_json, results_json, summary_json, notes_json)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (vendor_id, method, model, document_ids_json, results_json, summary_json,
+                 notes_json, responses_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 vendor_id,
@@ -530,9 +614,23 @@ def save_review(
                 json.dumps(results),
                 json.dumps(summary),
                 json.dumps(notes or []),
+                json.dumps({str(k): v for k, v in responses.items()}),
             ),
         )
         return int(cur.lastrowid)
+
+
+def update_review_responses(review_id: int, responses: Dict[Any, str]) -> None:
+    from app.questionnaire_scoring import RESPONSES
+
+    bad = {v for v in responses.values() if v not in RESPONSES}
+    if bad:
+        raise ValueError(f"Invalid response(s): {', '.join(sorted(bad))}")
+    with connect() as conn:
+        conn.execute(
+            "UPDATE document_reviews SET responses_json = ? WHERE id = ?",
+            (json.dumps({str(k): v for k, v in responses.items()}), review_id),
+        )
 
 
 def _review_row(row: sqlite3.Row) -> Dict[str, Any]:
@@ -540,6 +638,7 @@ def _review_row(row: sqlite3.Row) -> Dict[str, Any]:
     d["documents"] = json.loads(d.pop("document_ids_json") or "[]")
     for k in ("results", "summary", "notes"):
         d[k] = json.loads(d.pop(f"{k}_json") or "null")
+    d["responses"] = {int(k): v for k, v in json.loads(d.pop("responses_json") or "{}").items()}
     return d
 
 

@@ -59,6 +59,8 @@ if detail:
         st.caption("No document evidence was recorded for this assessment.")
     else:
         label = lambda t: DOC_TYPES_BY_ID.get(t, {}).get("label", t)
+        if evidence.get("questionnaire_score") is not None:
+            st.metric("Questionnaire score at the time", f"{evidence['questionnaire_score'] * 100:.1f}%")
         c1, c2, c3 = st.columns(3)
         c1.metric("Documents requested", len(evidence.get("requested", [])))
         c2.metric("Outstanding", len(evidence.get("outstanding", [])))

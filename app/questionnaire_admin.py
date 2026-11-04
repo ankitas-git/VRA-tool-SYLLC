@@ -5,8 +5,14 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Tuple
 
-EDITABLE = ("section", "text", "keywords", "guidance", "requires_document", "sort_order", "active")
-CSV_COLUMNS = ["section", "text", "keywords", "guidance", "requires_document", "sort_order", "active"]
+EDITABLE = (
+    "section", "nist_function", "weight", "text", "keywords", "guidance",
+    "requires_document", "sort_order", "active",
+)
+CSV_COLUMNS = [
+    "section", "nist_function", "weight", "text", "keywords", "guidance",
+    "requires_document", "sort_order", "active",
+]
 
 
 def _blank(v: Any) -> bool:
@@ -21,6 +27,8 @@ def _norm(row: Dict[str, Any]) -> Dict[str, Any]:
             out[k] = int(bool(v)) if not _blank(v) else (1 if k == "active" else 0)
         elif k == "sort_order":
             out[k] = int(v) if not _blank(v) else None
+        elif k == "weight":
+            out[k] = round(float(v), 4) if not _blank(v) else 0.0
         else:
             out[k] = "" if _blank(v) else str(v).strip()
     return out
@@ -49,6 +57,8 @@ def diff_questions(
                 raise ValueError(f"New row {i}: section and question text are both required.")
             if data["sort_order"] is None:
                 data.pop("sort_order")
+            if _blank(row.get("weight")):
+                data.pop("weight")  # new questions get the standard weight
             adds.append(data)
             continue
         qid = int(rid)

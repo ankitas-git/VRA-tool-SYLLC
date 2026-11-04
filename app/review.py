@@ -81,6 +81,8 @@ def _result(q: Dict[str, Any], status: str, answer: str = "", evidence=None, mis
         "section": q["section"],
         "question": q["text"],
         "requires_document": bool(q.get("requires_document")),
+        "nist_function": q.get("nist_function", ""),
+        "weight": q.get("weight"),
         "status": status,
         "answer": answer,
         "evidence": evidence or [],
@@ -124,6 +126,11 @@ def follow_up_request(vendor_name: str, results: Iterable[Dict[str, Any]]) -> st
         if ask != r["question"] or detail:
             lines.append(f"   - {ask}{detail}")
     return "\n".join(lines)
+
+
+def manual_results(questions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Empty results for scoring the questionnaire by hand, without documents."""
+    return [_result(q, NOT_REVIEWED, missing="") for q in questions]
 
 
 # --- Keyword scan (offline) ----------------------------------------------------

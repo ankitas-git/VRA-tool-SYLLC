@@ -3,7 +3,24 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from app.db import list_documents, list_questions, list_reviews, list_vendors, read_document, save_review
+from app.db import (
+    list_documents,
+    list_questions,
+    list_reviews,
+    list_vendors,
+    read_document,
+    save_review,
+    update_review_responses,
+)
+from app.questionnaire_scoring import (
+    RESPONSES,
+    SATISFACTORY,
+    fmt_pct,
+    review_items,
+    score_review,
+    suggested_response,
+)
+from app.workbook import write_scored_workbook
 from app.documents import DOC_TYPES_BY_ID
 from app.review import (
     ANSWERED,
@@ -16,6 +33,7 @@ from app.review import (
     claude_review,
     follow_up_request,
     keyword_review,
+    manual_results,
     prepare_docs,
     review_model,
     summarize,
@@ -120,22 +138,112 @@ with st.expander("Run a new review", expanded=not list_reviews(vendor_id)):
             except ReviewError as exc:
                 bar.empty()
                 st.error(str(exc))
+    st.divider()
+    st.caption(
+        "Or score the questionnaire by hand, without reviewing documents: every question starts "
+        "as Unsatisfactory and you set the responses below."
+    )
+    if st.button("Start manual scoring"):
+        results = manual_results(questions)
+        save_review(vendor_id, "manual", None, [d["id"] for d in doc_rows], results, summarize(results), [])
+        st.rerun()
 
 # --- Show a review ------------------------------------------------------------
 reviews = list_reviews(vendor_id)
 if not reviews:
     st.stop()
 
+METHOD_LABEL = {"claude": "AI review", "keyword": "Keyword scan", "manual": "Manual scoring"}
 review_labels = {
-    f"#{r['id']} — {r['created_at']} — "
-    f"{'AI review' if r['method'] == 'claude' else 'Keyword scan'} "
-    f"({r['summary']['coverage_pct']}% coverage)": r
+    f"#{r['id']} — {r['created_at']} — {METHOD_LABEL.get(r['method'], r['method'])} "
+    f"(score {fmt_pct(score_review(r, questions)['overall'])})": r
     for r in reviews
 }
 review = review_labels[st.selectbox("Review", list(review_labels.keys()))]
 results = review["results"]
 summary = review["summary"]
 counts = summary["counts"]
+
+score = score_review(review, questions)
+
+# --- Weighted score -------------------------------------------------------------
+st.subheader("Questionnaire score")
+st.caption(
+    "Each question adds its weight when the response is Satisfactory and nothing when it is "
+    "Unsatisfactory. Score = points earned ÷ points possible, overall, per NIST function and "
+    "per control area. Responses start from the document review (only fully answered questions "
+    "are Satisfactory) and can be changed below."
+)
+s1, s2, s3 = st.columns(3)
+s1.metric("Overall score", fmt_pct(score["overall"]))
+s2.metric("Points", f"{score['actual']:.1f} / {score['possible']:.1f}")
+s3.metric("Satisfactory responses", f"{score['satisfactory']} / {score['satisfactory'] + score['unsatisfactory']}")
+
+pct_col = st.column_config.ProgressColumn("score", min_value=0, max_value=1, format="percent")
+
+
+def group_table(groups, label):
+    return pd.DataFrame(
+        [
+            {label: g["name"], "score": g["score"], "points": f"{g['actual']:.1f} / {g['possible']:.1f}",
+             "questions": g["questions"]}
+            for g in groups
+        ]
+    )
+
+
+g1, g2 = st.columns([2, 3])
+with g1:
+    st.write("**Score by NIST function**")
+    st.dataframe(group_table(score["by_nist_function"], "NIST function"), use_container_width=True,
+                 hide_index=True, column_config={"score": pct_col})
+with g2:
+    st.write("**Score by control area**")
+    st.dataframe(group_table(score["by_control_area"], "control area"), use_container_width=True,
+                 hide_index=True, column_config={"score": pct_col})
+
+items = review_items(review, questions)
+with st.expander("Set responses"):
+    resp_df = pd.DataFrame(
+        [
+            {
+                "question_id": it["question_id"],
+                "control area": it["control_area"],
+                "NIST": it["nist_function"],
+                "question": it["question"],
+                "weight": it["weight"],
+                "document review": it["review_status"],
+                "response": it["response"],
+            }
+            for it in items
+        ]
+    )
+    edited = st.data_editor(
+        resp_df,
+        key=f"responses_{review['id']}",
+        use_container_width=True,
+        hide_index=True,
+        height=500,
+        disabled=["question_id", "control area", "NIST", "question", "weight", "document review"],
+        column_config={
+            "question_id": None,
+            "question": st.column_config.TextColumn(width="large"),
+            "weight": st.column_config.NumberColumn(format="%.2f", width="small"),
+            "response": st.column_config.SelectboxColumn(options=RESPONSES, required=True),
+        },
+    )
+    new_responses = dict(zip(edited["question_id"], edited["response"]))
+    changed = sum(1 for it in items if new_responses.get(it["question_id"]) != it["response"])
+    b1, b2 = st.columns(2)
+    if b1.button(f"Save responses ({changed} changed)", type="primary", disabled=not changed):
+        update_review_responses(review["id"], new_responses)
+        st.rerun()
+    if b2.button("Reset to the document review's suggestions"):
+        update_review_responses(
+            review["id"], {it["question_id"]: suggested_response(it["review_status"]) for it in items}
+        )
+        st.session_state.pop(f"responses_{review['id']}", None)
+        st.rerun()
 
 st.subheader("Does the evidence answer the questionnaire?")
 m1, m2, m3, m4, m5 = st.columns(5)
@@ -217,9 +325,18 @@ flat = pd.DataFrame(
             "evidence": " || ".join(f"{e['document']}: {e['excerpt']}" for e in r["evidence"]),
             "still_needed": r["missing"],
             "follow_up": r["follow_up"],
+            "response": next(it["response"] for it in items if it["question_id"] == r["question_id"]),
+            "weight": next(it["weight"] for it in items if it["question_id"] == r["question_id"]),
         }
         for r in results
     ]
+)
+st.download_button(
+    "Download scored questionnaire (Excel, same layout as the scoring workbook)",
+    write_scored_workbook(f"{vendor['name']} Vendor Risk Assessment", items),
+    file_name=f"vendor_risk_assessment_{vendor_id}_{review['id']}.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    type="primary",
 )
 d1, d2 = st.columns(2)
 d1.download_button(

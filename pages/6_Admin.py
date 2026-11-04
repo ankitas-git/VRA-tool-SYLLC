@@ -16,7 +16,9 @@ from app.db import (
     reset_questionnaire,
     update_question,
 )
+from app.company_questionnaire import NIST_FUNCTIONS, STANDARD_WEIGHT
 from app.questionnaire_admin import CSV_COLUMNS, diff_questions
+from app.workbook import WorkbookError, read_questionnaire
 
 st.set_page_config(page_title="Admin — VRA-tool-SYLLC", layout="wide")
 st.title("Admin: security questionnaire")
@@ -30,10 +32,15 @@ if not require_admin():
 
 questions = list_questions(active_only=False)
 active = sum(q["active"] for q in questions)
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Questions", len(questions))
 c2.metric("Active", active)
-c3.metric("Sections", len({q["section"] for q in questions}))
+c3.metric("Control areas", len({q["section"] for q in questions}))
+c4.metric(
+    "Points possible",
+    f"{sum(q['weight'] for q in questions if q['active']):.1f}",
+    help="Sum of the weights of active questions: the denominator of the overall score.",
+)
 
 tab_edit, tab_import, tab_log = st.tabs(["Edit questions", "Import / export", "Change log"])
 
@@ -42,7 +49,9 @@ with tab_edit:
         "Edit cells directly. Add a question in the empty row at the bottom; select rows and press "
         "Delete to remove them. Untick **active** to keep a question but leave it out of reviews. "
         "**keywords** (comma-separated) are used only by the offline keyword scan; "
-        "**guidance** tells the AI reviewer what a complete answer looks like."
+        "**guidance** tells the AI reviewer what a complete answer looks like. "
+        f"**weight** (0 to 1, standard {STANDARD_WEIGHT}) is the points a Satisfactory response "
+        "adds to the score; 0 means the question is asked but not scored."
     )
     sections = sorted({q["section"] for q in questions})
     df = pd.DataFrame(questions, columns=["id", *CSV_COLUMNS]) if questions else pd.DataFrame(columns=["id", *CSV_COLUMNS])
@@ -55,12 +64,22 @@ with tab_edit:
         hide_index=True,
         key="question_editor",
         height=600,
-        column_order=["id", "sort_order", "section", "text", "requires_document", "active", "keywords", "guidance"],
+        column_order=[
+            "id", "sort_order", "section", "nist_function", "weight", "text",
+            "requires_document", "active", "keywords", "guidance",
+        ],
         column_config={
             "id": st.column_config.NumberColumn("id", disabled=True, width="small"),
             "sort_order": st.column_config.NumberColumn("order", step=10, width="small"),
+            "nist_function": st.column_config.SelectboxColumn(
+                "NIST function", options=NIST_FUNCTIONS, width="small",
+            ),
+            "weight": st.column_config.NumberColumn(
+                "weight", min_value=0.0, max_value=1.0, step=0.1, format="%.2f",
+                default=STANDARD_WEIGHT, width="small",
+            ),
             "section": st.column_config.TextColumn(
-                "section", required=True,
+                "control area", required=True,
                 help="Existing sections: " + ", ".join(sections),
             ),
             "text": st.column_config.TextColumn("question", width="large", required=True),
@@ -94,6 +113,8 @@ with tab_edit:
         st.session_state.pop("question_editor", None)
         st.success("Questionnaire saved.")
         st.rerun()
+    if pending:
+        st.caption("Weight changes apply to new reviews; existing reviews keep the weights they were scored with.")
 
 with tab_import:
     export = pd.DataFrame(questions, columns=CSV_COLUMNS) if questions else pd.DataFrame(columns=CSV_COLUMNS)
@@ -105,14 +126,21 @@ with tab_import:
     )
     st.divider()
     st.write(
-        "**Import** replaces the whole questionnaire. The CSV needs `section` and `text` columns; "
-        f"optional columns are {', '.join(c for c in CSV_COLUMNS if c not in ('section', 'text'))}. "
+        "**Import** replaces the whole questionnaire. Upload either:\n"
+        "- an **Excel workbook in the scoring-workbook layout** (columns *Control Area*, "
+        "*NIST Function*, *Question*, *Weight*); or\n"
+        f"- a **CSV** with `section` and `text` columns and optional {', '.join(c for c in CSV_COLUMNS if c not in ('section', 'text'))}.\n\n"
+        "A blank weight imports as 0 (asked but not scored), as in the workbook. "
         "If `requires_document` is blank it is set from the question wording."
     )
-    upload = st.file_uploader("Questionnaire CSV", type=["csv"])
+    upload = st.file_uploader("Questionnaire file", type=["csv", "xlsx"])
     if upload is not None:
         try:
-            incoming = pd.read_csv(io.BytesIO(upload.getvalue()), dtype=str, keep_default_na=False)
+            if upload.name.lower().endswith(".xlsx"):
+                rows = read_questionnaire(upload.getvalue())
+                incoming = pd.DataFrame(rows)[["section", "nist_function", "weight", "text"]].astype(str)
+            else:
+                incoming = pd.read_csv(io.BytesIO(upload.getvalue()), dtype=str, keep_default_na=False)
             missing = {"section", "text"} - set(incoming.columns)
             if missing:
                 raise ValueError(f"Missing column(s): {', '.join(sorted(missing))}")
@@ -123,7 +151,11 @@ with tab_import:
                     incoming[col] = incoming[col].map(
                         lambda v: "" if str(v).strip() == "" else str(v).strip().lower() in ("1", "true", "yes", "y")
                     )
-            st.write(f"{len(incoming)} questions in {incoming['section'].nunique()} sections.")
+            scored = incoming["weight"].map(lambda w: str(w).strip() not in ("", "0", "0.0")).sum() if "weight" in incoming else 0
+            st.write(
+                f"{len(incoming)} questions in {incoming['section'].nunique()} control areas, "
+                f"{scored} of them weighted."
+            )
             st.dataframe(incoming.head(20), use_container_width=True, hide_index=True)
             if st.checkbox("Replace the current questionnaire with this file"):
                 if st.button("Import", type="primary"):
@@ -135,7 +167,7 @@ with tab_import:
                     st.session_state.pop("question_editor", None)
                     st.success(f"Imported {n} questions.")
                     st.rerun()
-        except Exception as exc:
+        except (WorkbookError, ValueError, KeyError) as exc:
             st.error(f"Could not import: {exc}")
     st.divider()
     st.write("**Reset** restores the default SYLLC questionnaire that shipped with the app.")

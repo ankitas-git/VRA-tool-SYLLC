@@ -188,7 +188,8 @@ def test_diff_questions():
         {"id": None, "section": None, "text": None},  # blank row ignored
     ]
     adds, updates, deletes = diff_questions(orig, edited)
-    assert adds == [{"section": "B", "text": "New", "keywords": "", "guidance": "", "requires_document": 1, "active": 1}]
+    assert adds == [{"section": "B", "nist_function": "", "text": "New", "keywords": "", "guidance": "",
+                     "requires_document": 1, "active": 1}]
     assert updates == [(1, {"text": "Q1 edited", "active": 0})]
     assert deletes == [2]
     with pytest.raises(ValueError):

@@ -38,12 +38,30 @@ export VRA_ADMIN_PASSWORD='choose-a-strong-password'
 streamlit run Home.py
 ```
 
+## Questionnaire score
+
+The security questionnaire is scored the same way as SYLLC's scoring workbook (`Third_Party_Consulting_Risk_Questions.xlsx`):
+
+| Per question | |
+|---|---|
+| Weight | 0 to 1 (standard 0.3); 0 means asked but not scored |
+| Response | Satisfactory or Unsatisfactory |
+| Actual score | weight if Satisfactory, otherwise 0 |
+| Possible score | weight |
+
+- **Overall score** = Σ actual ÷ Σ possible
+- **Score by NIST function** (Govern, Identify, Protect, Detect, Respond, Recover) and **score by control area**: the same ratio over that group's questions
+
+The default questionnaire uses the workbook's control areas, NIST functions and weights (67 weighted questions, 30.1 points possible). Responses start from the document review (only *Answered* questions are Satisfactory; partial answers earn nothing until an analyst marks them Satisfactory) and can be changed on the Review page. You can also score by hand with no document review. Each review keeps the weights it was scored with, so later weight changes don't rewrite past scores.
+
+The Review page downloads the scored questionnaire as an Excel workbook in the same layout as the scoring workbook, with live `IF` / `SUMIF` formulas, so it recalculates if responses are changed in Excel. Admins can import a questionnaire straight from a workbook in that layout. The formula logic is in `app/questionnaire_scoring.py`.
+
 ## Questionnaire review
 
-The SYLLC security questionnaire (67 questions in 13 sections) is stored in the database. It is seeded from `app/company_questionnaire.py` on first run; after that the **Admin** page is the source of truth:
+The SYLLC security questionnaire (67 questions in 14 control areas) is stored in the database. It is seeded from `app/company_questionnaire.py` on first run; after that the **Admin** page is the source of truth:
 
-- edit question text, section, order, keywords and reviewer guidance in place; add or delete questions; deactivate questions without deleting them
-- export / import the whole questionnaire as CSV, or reset to the shipped default
+- edit question text, control area, NIST function, weight, order, keywords and reviewer guidance in place; add or delete questions; deactivate questions without deleting them
+- export the questionnaire as CSV; import it from CSV or from a workbook in the scoring-workbook layout; or reset to the shipped default
 - every change is recorded in a change log
 
 The **Review** page compares a vendor's documents with the active questions and marks each one **Answered**, **Partially answered**, or **Not answered**, with what the documents say, verbatim evidence excerpts and their source document, what is still missing, and a follow-up request for the vendor.
