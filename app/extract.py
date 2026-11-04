@@ -27,7 +27,7 @@ def extract_text(filename: str, data: bytes) -> Tuple[str, str]:
         if ext == ".csv":
             text = data.decode("utf-8-sig", errors="replace")
             rows = csv.reader(io.StringIO(text))
-            return "\n".join(" | ".join(r) for r in rows), ""
+            return _join_rows([c for c in r if c.strip()] for r in rows), ""
         if ext == ".txt":
             return data.decode("utf-8-sig", errors="replace"), ""
         if ext in IMAGE_FORMATS:
@@ -74,9 +74,22 @@ def _xlsx(data: bytes) -> str:
     wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
     parts = []
     for ws in wb.worksheets:
-        parts.append(f"[Sheet: {ws.title}]")
-        for row in ws.iter_rows(values_only=True):
-            cells = [str(c) for c in row if c not in (None, "")]
-            if cells:
-                parts.append(" | ".join(cells))
-    return "\n".join(parts)
+        parts.append(f"[Sheet: {ws.title.strip()}]")
+        parts.append(_join_rows([str(c) for c in row if c not in (None, "")] for row in ws.iter_rows(values_only=True)))
+    return "\n\n".join(p for p in parts if p)
+
+
+def _join_rows(rows) -> str:
+    """One line per spreadsheet row, rows separated by a blank line.
+
+    Line breaks inside a cell are collapsed, so each row (e.g. a questionnaire
+    question with its answers) stays one passage for the keyword scan and
+    reads cleanly for the AI review.
+    """
+    lines = []
+    for cells in rows:
+        cells = [" ".join(str(c).split()) for c in cells]
+        cells = [c for c in cells if c]
+        if cells:
+            lines.append(" | ".join(cells))
+    return "\n\n".join(lines)

@@ -1,0 +1,3 @@
+[server]
+# Matches MAX_UPLOAD_BYTES in app/documents.py so the uploader shows the real limit.
+maxUploadSize = 25

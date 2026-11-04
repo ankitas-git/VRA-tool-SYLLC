@@ -126,6 +126,10 @@ def review_items(review: Mapping[str, Any], current_questions: Iterable[Mapping[
                 "review_status": r["status"],
                 "response": responses.get(r["question_id"]) or suggested_response(r["status"]),
                 "note": r.get("missing") or "",
+                "answer": r.get("answer") or "",
+                "evidence": "\n".join(
+                    f"{e['document']}: \u201c{e['excerpt']}\u201d" for e in r.get("evidence") or []
+                ),
             }
         )
     return rows

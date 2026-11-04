@@ -24,7 +24,9 @@ HEADERS = [
     "Actual Score",
     "Possible Score",
     "Document review",
-    "Notes",
+    "What the documents say",
+    "Evidence",
+    "Still needed",
 ]
 
 
@@ -103,7 +105,7 @@ def write_scored_workbook(title: str, items: List[Dict[str, Any]]) -> bytes:
     """Build a workbook like SYLLC's, with live formulas, from scored items.
 
     Each item needs: control_area, nist_function, question, response, weight;
-    optional review_status and note.
+    optional review_status, answer, evidence and note (still needed).
     """
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -132,6 +134,8 @@ def write_scored_workbook(title: str, items: List[Dict[str, Any]]) -> bytes:
                 f'=IF(D{i}="{SATISFACTORY}",1*E{i},0)',
                 f"=E{i}",
                 it.get("review_status") or None,
+                it.get("answer") or None,
+                it.get("evidence") or None,
                 it.get("note") or None,
             ]
         )
@@ -143,7 +147,7 @@ def write_scored_workbook(title: str, items: List[Dict[str, Any]]) -> bytes:
     dv = DataValidation(type="list", formula1=f'"{",".join(RESPONSES)}"', allow_blank=True)
     q.add_data_validation(dv)
     dv.add(f"D2:D{max(last, 2)}")
-    for col, width in zip("ABCDEFGHI", (30, 14, 80, 16, 12, 12, 12, 20, 60)):
+    for col, width in zip("ABCDEFGHIJK", (30, 14, 70, 16, 12, 12, 12, 18, 60, 70, 45)):
         q.column_dimensions[col].width = width
     for row in q.iter_rows(min_row=2, max_row=last):
         for c in row:

@@ -63,7 +63,7 @@ def test_extract_docx_xlsx_csv_txt():
     text, _ = extract_text("sig.xlsx", buf.getvalue())
     assert "MFA | Required" in text
 
-    assert extract_text("a.csv", b"a,b\n1,2")[0] == "a | b\n1 | 2"
+    assert extract_text("a.csv", b"a,b\n1,2")[0] == "a | b\n\n1 | 2"
     assert extract_text("a.txt", b"hello")[0] == "hello"
     assert extract_text("a.png", b"\x89PNG")[0] == ""
     assert "Legacy" in extract_text("a.doc", b"\xd0\xcf")[1]
@@ -75,8 +75,11 @@ def test_extract_docx_xlsx_csv_txt():
 def test_keyword_review_statuses_and_evidence():
     results, notes = keyword_review(Q, [doc("policy.txt", POLICY)])
     by = {r["question_id"]: r for r in results}
-    assert by[1]["status"] == ANSWERED
+    # Q1 asks for a document: keywords alone can't prove it was supplied.
+    assert by[1]["status"] == PARTIAL and "can't confirm" in by[1]["missing"]
     assert by[1]["evidence"][0]["document"] == "policy.txt"
+    no_doc = [dict(Q[0], requires_document=0)]
+    assert keyword_review(no_doc, [doc("policy.txt", POLICY)])[0][0]["status"] == ANSWERED
     assert by[2]["status"] in (ANSWERED, PARTIAL)
     assert by[3]["status"] == NOT_ANSWERED
     assert "cannot tell" in notes[0]
@@ -238,3 +241,32 @@ def test_review_round_trip(tmp_db):
     rid = db.save_review(vid, "keyword", None, [1], results, summarize(results), notes)
     r = db.latest_review(vid)
     assert r["id"] == rid and r["results"] == results and r["documents"] == [1]
+
+
+def test_xlsx_rows_are_separate_passages():
+    from openpyxl import Workbook
+
+    from app.review import _passages
+
+    wb = Workbook()
+    wb.active.append(["B.1", "Is there a security policy?", "Yes, approved.\n\nSee policy list."])
+    wb.active.append(["B.2", "Is it reviewed?", "Yes, annually."])
+    buf = io.BytesIO()
+    wb.save(buf)
+    text, _ = extract_text("sig.xlsx", buf.getvalue())
+    assert _passages(text)[1:] == [
+        "B.1 | Is there a security policy? | Yes, approved. See policy list.",
+        "B.2 | Is it reviewed? | Yes, annually.",
+    ]
+
+
+def test_claude_review_sees_dates():
+    from datetime import date
+
+    client = FakeClient()
+    d = dict(doc("soc2.txt", POLICY, label="SOC 2 Type II report"), issued_on="2024-11-08", expires_on="2025-11-03")
+    claude_review(Q[:1], [d], client=client, model="m", effort="high")
+    call = client.calls[0]
+    assert call["messages"][0]["content"][0]["title"] == "soc2.txt (SOC 2 Type II report; issued 2024-11-08, expires 2025-11-03)"
+    assert f"Today's date is {date.today().isoformat()}" in call["messages"][0]["content"][-1]["text"]
+    assert "Take dates into account" in call["system"]

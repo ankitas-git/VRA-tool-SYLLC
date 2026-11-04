@@ -35,14 +35,16 @@ def upload_form(vendor_id: int, key: str, default_type: Optional[str] = None) ->
     """Form to upload one security document for a vendor."""
     type_ids = [d["id"] for d in DOC_TYPES]
     index = type_ids.index(default_type) if default_type in type_ids else 0
+    # The type picker sits outside the form so its description updates as you choose.
+    doc_type = st.selectbox(
+        "Document type",
+        type_ids,
+        index=index,
+        format_func=lambda t: DOC_TYPES_BY_ID[t]["label"],
+        key=f"doctype_{key}",
+    )
+    st.caption(DOC_TYPES_BY_ID[doc_type]["description"])
     with st.form(f"upload_{key}", clear_on_submit=True):
-        doc_type = st.selectbox(
-            "Document type",
-            type_ids,
-            index=index,
-            format_func=lambda t: DOC_TYPES_BY_ID[t]["label"],
-        )
-        st.caption(DOC_TYPES_BY_ID[doc_type]["description"])
         uploads = st.file_uploader(
             "Files",
             type=[e.lstrip(".") for e in sorted(ALLOWED_EXTENSIONS)],
