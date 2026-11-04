@@ -105,3 +105,28 @@ def test_assessment_stores_evidence(tmp_db):
                              evidence={"outstanding": ["dpa"]})
     assert '"dpa"' in db.get_assessment(aid)["evidence_json"]
     assert db.latest_answers(vid) == {"data_sensitivity": 5}
+
+
+def test_delete_vendor_removes_everything(tmp_db):
+    from app.review import manual_results, summarize
+
+    keep = db.add_vendor("Keep Co", "SaaS", "Sec")
+    gone = db.add_vendor("Gone Co", "SaaS", "Sec")
+    for vid in (keep, gone):
+        db.add_document(vid, "soc2_report", "soc2.pdf", b"%PDF-1.7 body")
+        db.save_assessment(vid, {"data_sensitivity": 5}, {"tier": "Low", "review_months": 36})
+        results = manual_results(db.list_questions())
+        db.save_review(vid, "manual", None, [], results, summarize(results), [])
+    gone_dir = tmp_db / "documents" / str(gone)
+    assert gone_dir.exists()
+    assert db.vendor_footprint(gone) == {"documents": 1, "document_reviews": 1, "assessments": 1}
+
+    assert db.delete_vendor(gone) == {"documents": 1, "document_reviews": 1, "assessments": 1}
+    assert db.get_vendor(gone) is None
+    assert not gone_dir.exists()
+    assert db.vendor_footprint(gone) == {"documents": 0, "document_reviews": 0, "assessments": 0}
+    # The other vendor is untouched.
+    assert db.vendor_footprint(keep) == {"documents": 1, "document_reviews": 1, "assessments": 1}
+    assert (tmp_db / "documents" / str(keep)).exists()
+    with pytest.raises(KeyError):
+        db.delete_vendor(gone)

@@ -228,6 +228,36 @@ def get_vendor(vendor_id: int) -> Optional[sqlite3.Row]:
         return conn.execute("SELECT * FROM vendors WHERE id = ?", (vendor_id,)).fetchone()
 
 
+def vendor_footprint(vendor_id: int) -> Dict[str, int]:
+    """How many records belong to a vendor (shown before deleting it)."""
+    with connect() as conn:
+        return {
+            table: conn.execute(f"SELECT COUNT(*) FROM {table} WHERE vendor_id = ?", (vendor_id,)).fetchone()[0]
+            for table in ("documents", "document_reviews", "assessments")
+        }
+
+
+def delete_vendor(vendor_id: int) -> Dict[str, int]:
+    """Delete a vendor with its documents (database rows and files), reviews and assessments.
+
+    The database rows go in one transaction; uploaded files are removed only
+    after it commits. Returns how many records of each kind were deleted.
+    Raises KeyError if the vendor doesn't exist.
+    """
+    import shutil
+
+    with connect() as conn:
+        if not conn.execute("SELECT 1 FROM vendors WHERE id = ?", (vendor_id,)).fetchone():
+            raise KeyError(vendor_id)
+        deleted = {
+            table: conn.execute(f"DELETE FROM {table} WHERE vendor_id = ?", (vendor_id,)).rowcount
+            for table in ("documents", "document_reviews", "assessments")
+        }
+        conn.execute("DELETE FROM vendors WHERE id = ?", (vendor_id,))
+    shutil.rmtree(DOCS_DIR / str(int(vendor_id)), ignore_errors=True)
+    return deleted
+
+
 def save_assessment(
     vendor_id: int,
     answers: Dict[str, int],
